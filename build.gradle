@@ -1,8 +1,19 @@
+buildscript {
+    configurations['classpath'].resolutionStrategy.eachDependency {
+        if (requested.group == 'org.jooq') {
+            // set jOOQ version used at configuration time to enforce a specific jOOQ config XML schema version
+            useVersion jooqVersion
+        }
+    }
+}
+
 plugins {
     id 'org.springframework.boot' version '2.4.1'
     id 'io.spring.dependency-management' version '1.0.10.RELEASE'
     id 'java'
     id 'com.avast.gradle.docker-compose' version '0.14.0'
+    id 'org.flywaydb.flyway' version "$flywayVersion"
+    id 'nu.studer.jooq' version '5.2'
 }
 
 group = 'com.github.avenderov'
@@ -15,6 +26,11 @@ repositories {
     mavenCentral()
 }
 
+ext['flyway.version'] = flywayVersion
+
+sourceSets.main.java.srcDirs += ['src/main/jooq']
+
+// https://search.maven.org/artifact/org.springframework.boot/spring-boot-dependencies/2.4.1/pom
 dependencies {
     annotationProcessor('org.projectlombok:lombok')
 
@@ -23,20 +39,85 @@ dependencies {
     }
     implementation("org.springframework.boot:spring-boot-starter-jetty")
     implementation('org.springframework.boot:spring-boot-starter-jooq')
+    implementation('org.flywaydb:flyway-core')
 
     compileOnly('org.projectlombok:lombok')
 
     runtimeOnly('org.postgresql:postgresql')
 
     testImplementation('org.springframework.boot:spring-boot-starter-test')
+
+    jooqGenerator('org.postgresql:postgresql')
 }
 
 dockerCompose.isRequiredBy(test)
 
 test {
     useJUnitPlatform()
+//    testLogging.showStandardStreams = true
     systemProperties([
-            'db.username': 'postgres',
-            'db.password': 'secret'
+            'db.url'     : dbUrl,
+            'db.username': dbUser,
+            'db.password': dbPassword
     ])
 }
+
+flyway {
+    url = dbUrl
+    user = dbUser
+    password = dbPassword
+}
+
+jooq {
+    version = jooqVersion
+
+    configurations {
+        main {
+            generateSchemaSourceOnCompilation = false
+
+            generationTool {
+                logging = org.jooq.meta.jaxb.Logging.WARN
+                jdbc {
+                    driver = 'org.postgresql.Driver'
+                    url = dbUrl
+                    user = dbUser
+                    password = dbPassword
+                }
+                generator {
+                    name = 'org.jooq.codegen.DefaultGenerator'
+                    strategy {
+                        name = 'org.jooq.codegen.DefaultGeneratorStrategy'
+                    }
+                    database {
+                        name = 'org.jooq.meta.postgres.PostgresDatabase'
+                        inputSchema = 'public'
+                        // Do not generate classes for tables that are not used in the code
+                        includes = 'customer'
+                        schemaVersionProvider = 'SELECT :schema_name || \'_\' || MAX("version") FROM "flyway_schema_history"'
+                        forcedTypes {
+                            forcedType {
+                                name = 'INSTANT'
+                                includeTypes = '(?i:TIMESTAMP\\ WITH\\ TIME\\ ZONE)'
+                            }
+                        }
+                    }
+                    generate {
+                        daos = false
+                        deprecated = false
+                        immutablePojos = false
+                        javaTimeTypes = true
+                        records = true
+                        fluentSetters = true
+                        relations = true
+                    }
+                    target {
+                        packageName = 'com.github.avenderov.persistence.jooq'
+                        directory = 'src/main/jooq'
+                    }
+                }
+            }
+        }
+    }
+}
+
+generateJooq.dependsOn(flywayMigrate)
